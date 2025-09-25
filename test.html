@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>PrivChat - login / register</title>
+<link rel="icon" href="data:," />
+<style>
+  :root{
+    --bg:#f6f9fc; --accent1:#6ea8fe; --accent2:#7b61ff; --card:#fff; --muted:#7a869a;
+    font-family:Inter, Roboto, system-ui, Arial;
+  }
+  html,body{height:100%;margin:0;background:linear-gradient(180deg,var(--bg),#fff);display:flex;align-items:center;justify-content:center;}
+  .wrap{width:100%;max-width:420px;padding:18px;}
+  .card{background:var(--card);border-radius:14px;padding:18px;box-shadow:0 6px 20px rgba(20,20,40,.06);}
+  h1{margin:0 0 8px;font-size:20px;color:#0f1724}
+  p.lead{margin:0 0 14px;color:var(--muted);font-size:13px}
+  input,button,textarea{width:100%;padding:12px;border-radius:10px;border:1px solid #e6eef9;font-size:14px}
+  .row{display:flex;gap:8px}
+  .muted{color:var(--muted);font-size:12px;margin-top:8px}
+  .tabs{display:flex;gap:6px;margin-bottom:12px}
+  .tab{flex:1;padding:8px;border-radius:10px;text-align:center;cursor:pointer;background:linear-gradient(90deg,var(--accent1),var(--accent2));color:#fff;font-weight:600}
+  .small{font-size:12px}
+  .center{display:flex;gap:8px;justify-content:center;align-items:center;margin-top:12px}
+  .logo{width:72px;height:72px;border-radius:16px;background:linear-gradient(135deg,var(--accent1),var(--accent2));display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:22px;margin:0 auto 10px}
+  .error{color:#b00020;font-size:13px;margin-top:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card" id="app">
+    <div class="logo">PV</div>
+    <h1>PrivChat - Developer ADITdeveloper</h1>
+    <p class="lead">Chat realtime untuk mobile. Daftar dan masuk untuk mulai.</p>
+
+    <div class="tabs">
+      <div class="tab" id="tab-login">Login</div>
+      <div class="tab" id="tab-register">Daftar</div>
+    </div>
+
+    <div id="form-login">
+      <input id="login-username" placeholder="Username" />
+      <input id="login-password" placeholder="Password" type="password" />
+      <div style="height:8px"></div>
+      <button id="btn-login">Masuk</button>
+      <div class="muted small">Belum punya akun? Tekan 'Daftar'.</div>
+      <div id="login-msg" class="error"></div>
+    </div>
+
+    <div id="form-register" style="display:none">
+      <input id="reg-username" placeholder="Username (unik)" />
+      <textarea id="reg-info" placeholder="Info singkat (maks 100 karakter)" maxlength="100" style="height:70px"></textarea>
+      <input id="reg-password" placeholder="Password" type="password" />
+      <div style="height:8px"></div>
+      <button id="btn-register">Daftar</button>
+      <div class="muted small">Username tidak boleh sama. Password akan di-hash.</div>
+      <div id="reg-msg" class="error"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const DB_URL = 'https://uvoword-default-rtdb.asia-southeast1.firebasedatabase.app';
+
+// UI
+const tabLogin = document.getElementById('tab-login');
+const tabRegister = document.getElementById('tab-register');
+const formLogin = document.getElementById('form-login');
+const formRegister = document.getElementById('form-register');
+tabLogin.onclick = ()=>{ formLogin.style.display='block'; formRegister.style.display='none'; }
+tabRegister.onclick = ()=>{ formLogin.style.display='none'; formRegister.style.display='block'; }
+
+// helpers
+async function sha256(str){
+  const buf = new TextEncoder().encode(str);
+  const digest = await crypto.subtle.digest('SHA-256', buf);
+  return Array.from(new Uint8Array(digest)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+async function fetchJSON(path, opts){
+  const url = DB_URL.replace(/\/$/,'') + path;
+  const res = await fetch(url, opts);
+  if(!res.ok) throw new Error('Server error '+res.status);
+  return res.json();
+}
+
+// get client ip (for login record)
+async function getIP(){ try{ const r=await fetch('https://api.ipify.org?format=json'); const j=await r.json(); return j.ip; }catch(e){return '0.0.0.0'} }
+
+// registration
+document.getElementById('btn-register').onclick = async ()=>{
+  const u = document.getElementById('reg-username').value.trim();
+  const info = document.getElementById('reg-info').value.trim().slice(0,100);
+  const pw = document.getElementById('reg-password').value;
+  const msg = document.getElementById('reg-msg'); msg.textContent='';
+  if(!u || !pw){ msg.textContent='Username & password harus diisi'; return; }
+  try{
+    // check username unique
+    const existing = await fetchJSON('/users.json?orderBy="username"&equalTo="'+u+'"');
+    if(existing && Object.keys(existing).length>0){ msg.textContent='Username sudah dipakai'; return; }
+
+    // get last id
+    const allUsers = await fetchJSON('/users.json') || {};
+    const ids = Object.values(allUsers).map(x => Number(x.userId)).filter(Boolean);
+    let next = 5001;
+    if(ids.length>0){ next = Math.max(...ids) + 1; }
+    // hash password
+    const pwHash = await sha256(pw);
+
+    const userData = {
+      userId: next,
+      username: u,
+      displayName: u,
+      info: info || '',
+      passwordHash: pwHash,
+      ip: await getIP(),
+      onOf: true,
+      userstatus: 'active', // active | banned | muted
+      createdAt: Date.now()
+    };
+
+    // push to DB under key username_<timestamp> to avoid collisions
+    await fetchJSON('/users/'+next+'.json','PUT' === 'PUT' ? { // hack to use PUT route
+      method:'PUT',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(userData)
+    } : {});
+    // after register redirect to beranda with sessionStorage
+    sessionStorage.setItem('priv_user', JSON.stringify({userId: next, username:u}));
+    location.href = 'beranda.html';
+  }catch(e){
+    msg.textContent = 'Gagal daftar: '+e.message;
+  }
+};
+
+// login
+document.getElementById('btn-login').onclick = async ()=>{
+  const u = document.getElementById('login-username').value.trim();
+  const pw = document.getElementById('login-password').value;
+  const msg = document.getElementById('login-msg'); msg.textContent='';
+  if(!u || !pw){ msg.textContent='Username & password harus diisi'; return; }
+  try{
+    // lookup by username (since we stored by userId key, fetch all and find)
+    const all = await fetchJSON('/users.json') || {};
+    const users = Object.values(all);
+    const found = users.find(x => x.username === u || x.displayName === u);
+    if(!found){ msg.textContent='User tidak ditemukan'; return; }
+    const hash = await sha256(pw);
+    if(hash !== found.passwordHash){ msg.textContent='Password salah'; return; }
+    // save login meta: update ip and lastLogin
+    const ip = await getIP();
+    await fetchJSON('/users/'+found.userId+'/lastLogin.json', { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ip, at: Date.now()}) });
+    sessionStorage.setItem('priv_user', JSON.stringify({userId: found.userId, username: found.username}));
+    location.href = 'beranda.html';
+  }catch(e){
+    msg.textContent = 'Gagal login: '+e.message;
+  }
+};
+
+</script>
+</body>
+</html>
